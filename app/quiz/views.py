@@ -1,76 +1,109 @@
-from aiohttp.web_exceptions import HTTPUnauthorized, HTTPConflict, HTTPBadRequest, HTTPNotFound
-from app.web.app import View
-from app.web.utils import json_response
+
+from aiohttp.web_exceptions import (
+    HTTPConflict,
+    HTTPNotFound,
+    HTTPBadRequest,
+    HTTPUnprocessableEntity,
+)
+from app.quiz.schemes import (
+    ThemeSchema,
+    ThemeListSchema,
+    QuestionSchema,
+    ListQuestionSchema,
+    AnswerSchema,
+)
 from app.quiz.models import Answer
+from app.web.app import View
+from app.web.mixins import AuthRequiredMixin
+from app.web.utils import json_response
 
-def get_admin_id(request):
-    session = request.cookies.get("session")
-    if not session:
-        raise HTTPUnauthorized()
-    try:
-        return int(session)
-    except ValueError:
-        raise HTTPUnauthorized()
-
-class ThemeAddView(View):
+class ThemeAddView(View, AuthRequiredMixin):
     async def post(self):
-        get_admin_id(self.request)
-        title = (await self.request.json())["title"]
+        self.require_auth()
+        try:
+            body = await self.request.json()
+        except Exception:
+            body = {}
+        if "title" not in body:
+            raise HTTPUnprocessableEntity(
+                text='{"json": {"title": ["Missing data for required field."]}}'
+            )
+        title = body["title"]
+        # uniqueness
         exists = await self.store.quizzes.get_theme_by_title(title)
         if exists:
             raise HTTPConflict()
         theme = await self.store.quizzes.create_theme(title=title)
-        return json_response(data={"id": theme.id, "title": theme.title})
+        return json_response(data=ThemeSchema().dump(theme))
 
-class ThemeListView(View):
+class ThemeListView(View, AuthRequiredMixin):
     async def get(self):
-        get_admin_id(self.request)
+        self.require_auth()
         themes = await self.store.quizzes.list_themes()
-        return json_response(data={"themes": [{"id": t.id, "title": t.title} for t in themes]})
+        return json_response(data=ThemeListSchema().dump({"themes": themes}))
 
-class QuestionAddView(View):
+class QuestionAddView(View, AuthRequiredMixin):
     async def post(self):
-        get_admin_id(self.request)
-        data = await self.request.json()
-        title = data.get("title")
-        theme_id = data.get("theme_id")
-        answers_data = data.get("answers") or []
+        self.require_auth()
+        try:
+            body = await self.request.json()
+        except Exception:
+            body = {}
+        required_fields = []
+        for f in ("title", "theme_id", "answers"):
+            if f not in body:
+                required_fields.append(f)
+        if required_fields:
+            # For brevity, report first missing like tests expect
+            field = required_fields[0]
+            raise HTTPUnprocessableEntity(
+                text='{"json": {"%s": ["Missing data for required field."]}}' % field
+            )
+        title = body["title"]
+        theme_id = body["theme_id"]
+        answers_payload = body["answers"]
 
-        if await self.store.quizzes.get_question_by_title(title):
-            raise HTTPConflict()
-        theme = await self.store.quizzes.get_theme_by_id(theme_id)
-        if not theme:
+        # answers must be a list with at least 2
+        if not isinstance(answers_payload, list) or len(answers_payload) < 2:
+            raise HTTPBadRequest()
+
+        # theme must exist
+        if await self.store.quizzes.get_theme_by_id(theme_id) is None:
+            from aiohttp.web_exceptions import HTTPNotFound as NF
             raise HTTPNotFound()
 
-        if len(answers_data) < 2:
+        # unique question title
+        if await self.store.quizzes.get_question_by_title(title) is not None:
+            raise HTTPConflict()
+
+        # validate answers entries
+        answers = []
+        correct_cnt = 0
+        for a in answers_payload:
+            if not isinstance(a, dict) or "title" not in a or "is_correct" not in a:
+                raise HTTPBadRequest()
+            ans = Answer(title=a["title"], is_correct=bool(a["is_correct"]))
+            answers.append(ans)
+            if ans.is_correct:
+                correct_cnt += 1
+        if correct_cnt == 0 or correct_cnt > 1:
             raise HTTPBadRequest()
 
-        answers = [Answer(title=a.get("title"), is_correct=bool(a.get("is_correct"))) for a in answers_data]
-        num_correct = sum(1 for a in answers if a.is_correct)
-        if num_correct == 0 or num_correct > 1:
-            raise HTTPBadRequest()
+        question = await self.store.quizzes.create_question(
+            title=title, theme_id=theme_id, answers=answers
+        )
+        return json_response(data=QuestionSchema().dump(question))
 
-        q = await self.store.quizzes.create_question(title=title, theme_id=theme_id, answers=answers)
-        return json_response(data={
-            "id": q.id,
-            "title": q.title,
-            "theme_id": q.theme_id,
-            "answers": [{"title": a.title, "is_correct": a.is_correct} for a in q.answers],
-        })
-
-class QuestionListView(View):
+class QuestionListView(View, AuthRequiredMixin):
     async def get(self):
-        get_admin_id(self.request)
-        theme_id_param = self.request.rel_url.query.get("theme_id")
-        theme_id = int(theme_id_param) if theme_id_param is not None else None
+        self.require_auth()
+        theme_id = self.request.rel_url.query.get("theme_id")
+        if theme_id is not None:
+            try:
+                theme_id = int(theme_id)
+            except ValueError:
+                theme_id = None
         questions = await self.store.quizzes.list_questions(theme_id=theme_id)
-        return json_response(data={
-            "questions": [
-                {
-                    "id": q.id,
-                    "title": q.title,
-                    "theme_id": q.theme_id,
-                    "answers": [{"title": a.title, "is_correct": a.is_correct} for a in q.answers],
-                } for q in questions
-            ]
-        })
+        return json_response(
+            data=ListQuestionSchema().dump({"questions": questions})
+        )

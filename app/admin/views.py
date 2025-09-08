@@ -1,32 +1,49 @@
-from aiohttp.web_exceptions import HTTPUnauthorized
-from aiohttp_apispec import docs
-from aiohttp.web import View
-from app.web.utils import ok_json_response, error_json_response
-from app.admin.schemes import AdminSchema
+
+import json
+from aiohttp.web_exceptions import HTTPForbidden, HTTPUnauthorized, HTTPUnprocessableEntity
+from app.web.app import View
+from app.web.utils import json_response
 
 class AdminLoginView(View):
-    @docs(tags=["admin"], summary="Admin login")
     async def post(self):
-        data = await self.request.json()
-        email = data.get("email")
-        password = data.get("password")
+        # Validate payload
+        try:
+            body = await self.request.json()
+        except Exception:
+            body = {}
+        if "email" not in body:
+            raise HTTPUnprocessableEntity(
+                text='{"json": {"email": ["Missing data for required field."]}}'
+            )
+        if "password" not in body:
+            raise HTTPUnprocessableEntity(
+                text='{"json": {"password": ["Missing data for required field."]}}'
+            )
+        email = body["email"]
+        password = body["password"]
 
-        if not email or not password:
-            return error_json_response("bad_request", status=400)
+        import hashlib
+        admin = await self.store.admins.get_by_email(email)
+        hashed = hashlib.sha256(password.encode('utf-8')).hexdigest()
+        if not admin or admin.password != hashed:
+            raise HTTPForbidden()
 
-        admin = await self.request.app.store.admins.get_by_email(email)
-        if not admin or admin.password != password:
-            raise HTTPUnauthorized
-
-        self.request.session["admin"] = admin.id
-        return ok_json_response({"data": AdminSchema().dump(admin)})
+        # set auth cookie
+        response = json_response(data={"id": admin.id, "email": admin.email})
+        response.set_cookie("session", str(admin.id))
+        return response
 
 class AdminCurrentView(View):
-    @docs(tags=["admin"], summary="Get current admin")
     async def get(self):
-        admin_id = self.request.session.get("admin")
-        if not admin_id:
-            raise HTTPUnauthorized
-
-        admin = await self.request.app.store.admins.get_by_id(admin_id)
-        return ok_json_response({"data": AdminSchema().dump(admin)})
+        session_val = self.request.cookies.get("session")
+        if session_val is None:
+            raise HTTPUnauthorized()
+        # find admin
+        try:
+            admin_id = int(session_val)
+        except ValueError:
+            raise HTTPForbidden()
+        admin = next((a for a in self.store.app.database.admins if a.id == admin_id), None)
+        if admin is None:
+            raise HTTPForbidden()
+        return json_response(data={"id": admin.id, "email": admin.email})
