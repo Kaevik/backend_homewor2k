@@ -1,17 +1,19 @@
 from dataclasses import dataclass
-
+from typing import List, Optional
 
 @dataclass
 class Theme:
-    id: int | None
+    id: Optional[int]
     title: str
-
-
-@dataclass
-class Question:
-    pass
-
 
 @dataclass
 class Answer:
-    pass
+    title: str
+    is_correct: bool
+
+@dataclass
+class Question:
+    id: int
+    title: str
+    theme_id: int
+    answers: List[Answer]
