@@ -1,38 +1,32 @@
-from aiohttp import web
-from app.web.utils import json_response, error_json_response
+from aiohttp.web_exceptions import HTTPUnauthorized
+from aiohttp_apispec import docs
+from aiohttp.web import View
+from app.web.utils import ok_json_response, error_json_response
+from app.admin.schemes import AdminSchema
 
-
-class AdminLoginView(web.View):
+class AdminLoginView(View):
+    @docs(tags=["admin"], summary="Admin login")
     async def post(self):
         data = await self.request.json()
-
         email = data.get("email")
         password = data.get("password")
+
         if not email or not password:
-            return error_json_response(
-                http_status=400,
-                status="bad_request",
-                message="email and password are required",
-                data={"email": ["Missing data."]} if not email else {"password": ["Missing data."]}
-            )
+            return error_json_response("bad_request", status=400)
 
-        admin = await self.store.admins.get_by_email(email)
-        if not admin or not self.store.admins.verify_password(password, admin.password):
-            raise web.HTTPForbidden(reason="invalid credentials")
+        admin = await self.request.app.store.admins.get_by_email(email)
+        if not admin or admin.password != password:
+            raise HTTPUnauthorized
 
-        response = json_response({"id": admin.id, "email": admin.email})
-        response.set_cookie("session", str(admin.id))
-        return response
+        self.request.session["admin"] = admin.id
+        return ok_json_response({"data": AdminSchema().dump(admin)})
 
-
-class AdminCurrentView(web.View):
+class AdminCurrentView(View):
+    @docs(tags=["admin"], summary="Get current admin")
     async def get(self):
-        session_id = self.request.cookies.get("session")
-        if not session_id:
-            raise web.HTTPUnauthorized(reason="no session provided")
+        admin_id = self.request.session.get("admin")
+        if not admin_id:
+            raise HTTPUnauthorized
 
-        admin = await self.store.admins.get_by_id(int(session_id))
-        if not admin:
-            raise web.HTTPForbidden(reason="invalid session")
-
-        return json_response({"id": admin.id, "email": admin.email})
+        admin = await self.request.app.store.admins.get_by_id(admin_id)
+        return ok_json_response({"data": AdminSchema().dump(admin)})

@@ -3,7 +3,6 @@ from aiohttp.web import (
     Request as AiohttpRequest,
     View as AiohttpView,
 )
-from typing import Any
 
 from app.admin.models import Admin
 from app.store import Store, setup_store
@@ -13,42 +12,37 @@ from app.web.logger import setup_logging
 from app.web.middlewares import setup_middlewares
 from app.web.routes import setup_routes
 
-class Application(AiohttpApplication):
-    config: Config
-    store: Store
-    database: Database
 
-    def __init__(self):
-        super().__init__()
-        self.database = Database()
+class Application(AiohttpApplication):
+    config: Config | None = None
+    store: Store | None = None
+    database: Database = Database()
+
 
 class Request(AiohttpRequest):
+    admin: Admin | None = None
+
     @property
-    def app(self) -> Application:  # type: ignore[override]
-        return super().app  # type: ignore
+    def app(self) -> Application:
+        return super().app()
+
 
 class View(AiohttpView):
     @property
-    def app(self) -> Application:  # type: ignore[override]
-        return self.request.app  # type: ignore
+    def request(self) -> Request:
+        return super().request
 
     @property
     def store(self) -> Store:
-        return self.app.store
-
-    @property
-    def database(self) -> Database:
-        return self.app.database
-
-    @property
-    def config(self) -> Config:
-        return self.app.config
+        return self.request.app.store
 
     @property
     def data(self) -> dict:
         return self.request.get("data", {})
 
+
 app = Application()
+
 
 def setup_app(config_path: str) -> Application:
     setup_logging(app)
